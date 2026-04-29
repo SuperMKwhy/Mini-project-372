@@ -7,3 +7,4 @@ local.settings.json
 simulation
 venv
 sql
+.env.server
