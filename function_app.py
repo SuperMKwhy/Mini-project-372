@@ -342,36 +342,51 @@ STATION_INSERT_MAP = {
     consumer_group="$Default",
 )
 def iot_hub_to_sql(event: func.EventHubEvent) -> None:
+    logging.info(">>> iot_hub_to_sql triggered")
+
     body = event.get_body().decode("utf-8")
-    logging.info("Received event body: %s", body)
+    logging.info("RAW BODY: %s", body)
 
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
-        logging.error("Failed to parse JSON payload: %s", exc)
+        logging.error("JSON parse failed: %s", exc)
         return
 
+    logging.info("Payload type: %s  length: %s", type(payload).__name__, len(payload) if isinstance(payload, list) else "n/a")
+
     if not _is_plc_payload(payload):
-        logging.warning("Payload is not a recognised PLC format – skipping")
+        logging.warning("Not a PLC payload – skipping. First element keys: %s", list(payload[0].keys()) if isinstance(payload, list) and payload else "n/a")
         return
 
     device_id = _get_connection_device_id(payload)
-    station   = DEVICE_STATION_MAP.get(device_id)
+    logging.info("ConnectionDeviceId: '%s'", device_id)
+
+    station = DEVICE_STATION_MAP.get(device_id)
+    logging.info("Mapped station: '%s'", station)
 
     if station is None:
-        logging.warning("Unknown device id '%s' – skipping", device_id)
+        logging.warning("Unknown device id '%s' – not in DEVICE_STATION_MAP. Known keys: %s", device_id, list(DEVICE_STATION_MAP.keys()))
         return
 
-    tags      = _extract_tags(payload)
+    tags = _extract_tags(payload)
+    logging.info("Extracted tags: %s", tags)
+
     insert_fn = STATION_INSERT_MAP[station]
 
     try:
+        logging.info("Connecting to SQL: server=%s database=%s user=%s", SQL_SERVER, SQL_DATABASE, SQL_USER)
         with get_connection() as conn:
             cursor = conn.cursor()
+            logging.info("Connected. Running CREATE_TABLES_SQL...")
             cursor.execute(CREATE_TABLES_SQL)
+            logging.info("Tables ensured. Running insert for station=%s...", station)
             insert_fn(cursor, tags)
             conn.commit()
-        logging.info("Inserted 1 row into %s station table (device=%s)", station, device_id)
+        logging.info("<<< Done: committed row for station=%s device=%s", station, device_id)
     except pymssql.Error as exc:
-        logging.error("SQL error: %s", exc)
+        logging.error("SQL error (number=%s severity=%s): %s", exc.args[0] if exc.args else "?", exc.args[1] if len(exc.args) > 1 else "?", exc)
+        raise
+    except Exception as exc:
+        logging.error("Unexpected error: %s", exc, exc_info=True)
         raise
