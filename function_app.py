@@ -269,7 +269,18 @@ def _insert_s2(cursor, tags: dict) -> None:
     departure_time = _unix_sec_to_dt(tags.get(TAG_S2_DEPARTURE))
     tare_weight    = tags.get(TAG_S2_WEIGHT)
 
-    if arrival_time and not departure_time:
+    if arrival_time and departure_time:
+        # Full record in one message — INSERT everything at once
+        order_id = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
+        cursor.execute(INSERT_S2, (
+            str(order_id),
+            arrival_time,
+            float(tare_weight) if tare_weight is not None else None,
+            departure_time,
+        ))
+        logging.info("S2 full record: order_id=%s arrival=%s weight=%s departure=%s", order_id, arrival_time, tare_weight, departure_time)
+
+    elif arrival_time:
         order_id = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
         cursor.execute(INSERT_S2, (
             str(order_id),
@@ -277,14 +288,14 @@ def _insert_s2(cursor, tags: dict) -> None:
             float(tare_weight) if tare_weight is not None else None,
             None,
         ))
-        logging.info("S2 entry recorded: order_id=%s arrival=%s weight=%s", order_id, arrival_time, tare_weight)
+        logging.info("S2 entry only: order_id=%s arrival=%s weight=%s", order_id, arrival_time, tare_weight)
 
-    elif departure_time and not arrival_time:
+    elif departure_time:
         cursor.execute(UPDATE_S2_DEPARTURE, (departure_time,))
-        logging.info("S2 departure recorded: departure=%s", departure_time)
+        logging.info("S2 departure only: departure=%s", departure_time)
 
     else:
-        logging.warning("S2 payload has unexpected tag combination — entry=%s exit=%s", arrival_time, departure_time)
+        logging.warning("S2 payload has no entry or exit time — tags: %s", tags)
 
 
 def _insert_s3a(cursor, tags: dict) -> None:
