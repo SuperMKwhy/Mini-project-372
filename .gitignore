@@ -8,3 +8,4 @@ simulation
 venv
 sql
 .env.server
+claude.md
