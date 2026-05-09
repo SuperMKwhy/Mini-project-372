@@ -18,6 +18,17 @@ SQL_PASSWORD = os.environ["SqlPassword"]
 # ---------------------------------------------------------------------------
 
 CREATE_TABLES_SQL = """
+IF NOT EXISTS (
+    SELECT * FROM sysobjects WHERE name='test_device_telemetry' AND xtype='U'
+)
+CREATE TABLE test_device_telemetry (
+    id          INT IDENTITY(1,1) PRIMARY KEY,
+    device_id   NVARCHAR(100)   NOT NULL,
+    temperature FLOAT           NOT NULL,
+    humidity    FLOAT           NOT NULL,
+    received_at DATETIME2       NOT NULL
+);
+
 IF NOT EXISTS (SELECT * FROM sys.sequences WHERE name = 'order_seq')
     EXEC('CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 1');
 
@@ -72,8 +83,13 @@ CREATE TABLE EXIT_LOGS (
 """
 
 # ---------------------------------------------------------------------------
-# INSERT statements
+# INSERT / UPDATE statements
 # ---------------------------------------------------------------------------
+
+INSERT_TEST_DEVICE = """
+INSERT INTO test_device_telemetry (device_id, temperature, humidity, received_at)
+VALUES (%s, %s, %s, %s)
+"""
 
 INSERT_S2 = """
 INSERT INTO S2_LOGS (order_id, arrival_time, tare_weight_kg, departure_time)
@@ -116,13 +132,12 @@ WHERE departure_time IS NULL
 # Tag-name suffixes  (last segment of the dot-separated tag id)
 # ---------------------------------------------------------------------------
 
-# Common
-TAG_ORDER_ID = "OrderId"                    # PLACEHOLDER – PO number string; add to every payload
+TAG_ORDER_ID = "OrderId"                    # PLACEHOLDER – PO number string
 
 # S2
-TAG_S2_WEIGHT    = "WT_001"                 # kg
-TAG_S2_ARRIVAL   = "EntryTime_S2"           # Unix seconds
-TAG_S2_DEPARTURE = "ExitTime_S2"            # Unix seconds
+TAG_S2_WEIGHT    = "WT_001"
+TAG_S2_ARRIVAL   = "EntryTime_S2"
+TAG_S2_DEPARTURE = "ExitTime_S2"
 
 # S3A                                       # all PLACEHOLDER – confirm tag names from PLC
 TAG_S3A_BAY        = "BayNumber_S3A"
@@ -134,7 +149,7 @@ TAG_S3A_FINAL_MASS = "FinalFillingMass_S3A"
 TAG_S3A_END_FILL   = "EndFillingTime_S3A"
 TAG_S3A_DEPARTURE  = "ExitTime_S3A"
 
-# S3B (mirror)
+# S3B
 TAG_S3B_BAY        = "BayNumber_S3B"
 TAG_S3B_ARRIVAL    = "EntryTime_S3B"
 TAG_S3B_START_FILL = "StartFillingTime_S3B"
@@ -145,10 +160,10 @@ TAG_S3B_END_FILL   = "EndFillingTime_S3B"
 TAG_S3B_DEPARTURE  = "ExitTime_S3B"
 
 # S4
-TAG_S4_GROSS     = "WeightsensorS4"         # gross weight kg
+TAG_S4_GROSS     = "WeightsensorS4"
 TAG_S4_NET       = "NetWeight_S4"           # PLACEHOLDER
-TAG_S4_ARRIVAL   = "EntryTime_S4"           # PLACEHOLDER – Unix seconds
-TAG_S4_DEPARTURE = "ExitTime_S4"            # PLACEHOLDER – Unix seconds
+TAG_S4_ARRIVAL   = "EntryTime_S4"           # PLACEHOLDER
+TAG_S4_DEPARTURE = "ExitTime_S4"            # PLACEHOLDER
 
 # EXIT
 TAG_EXIT_DEPARTURE = "ExitTime_Exit"        # PLACEHOLDER
@@ -180,30 +195,24 @@ def get_connection() -> pymssql.Connection:
 
 
 def _next_order_id(cursor) -> str:
-    """Generate next sequential order id (S0001, S0002, …) using a DB sequence."""
     cursor.execute("SELECT NEXT VALUE FOR order_seq")
     n = cursor.fetchone()[0]
     return f"S{n:04d}"
 
 
 def _unix_sec_to_dt(v) -> datetime | None:
-    """Convert Unix-second integer tag value to UTC datetime. Returns None if falsy."""
     if not v:
         return None
     return datetime.fromtimestamp(float(v), tz=timezone.utc)
 
 
 def _extract_tags(payload: list) -> dict:
-    """
-    Scan all events in the batch and return {tag_suffix: first_non-falsy_value}.
-    Zero and None are treated as 'not set' since the PLC resets tags to 0 between trucks.
-    """
     tags: dict = {}
     for event in payload:
         for item in event.get("values", []):
             suffix = item.get("id", "").split(".")[-1]
             value  = item.get("v")
-            if suffix not in tags and value:   # keep first non-zero/non-None value
+            if suffix not in tags and value:
                 tags[suffix] = value
     return tags
 
@@ -225,13 +234,27 @@ def _is_plc_payload(payload) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _handle_test_device(cursor, payload: dict) -> None:
+    device_id   = payload.get("device_id")
+    temperature = payload.get("temperature")
+    humidity    = payload.get("humidity")
+
+    if any(v is None for v in [device_id, temperature, humidity]):
+        logging.error("Missing required fields. Got: device_id=%s, temperature=%s, humidity=%s",
+                      device_id, temperature, humidity)
+        return
+
+    received_at = datetime.now(timezone.utc)
+    cursor.execute(INSERT_TEST_DEVICE, (device_id, float(temperature), float(humidity), received_at))
+    logging.info("Inserted test_device_telemetry: device_id=%s", device_id)
+
+
 def _insert_s2(cursor, tags: dict) -> None:
     arrival_time   = _unix_sec_to_dt(tags.get(TAG_S2_ARRIVAL))
     departure_time = _unix_sec_to_dt(tags.get(TAG_S2_DEPARTURE))
     tare_weight    = tags.get(TAG_S2_WEIGHT)
 
     if arrival_time and not departure_time:
-        # Phase 1: truck arrived — INSERT new row, leave departure_time NULL
         order_id = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
         cursor.execute(INSERT_S2, (
             str(order_id),
@@ -242,7 +265,6 @@ def _insert_s2(cursor, tags: dict) -> None:
         logging.info("S2 entry recorded: order_id=%s arrival=%s weight=%s", order_id, arrival_time, tare_weight)
 
     elif departure_time and not arrival_time:
-        # Phase 2: truck departed — UPDATE the open row (departure_time IS NULL)
         cursor.execute(UPDATE_S2_DEPARTURE, (departure_time,))
         logging.info("S2 departure recorded: departure=%s", departure_time)
 
@@ -264,13 +286,11 @@ def _insert_s3a(cursor, tags: dict) -> None:
     cursor.execute(INSERT_S3A, (
         str(order_id),
         int(bay_number) if bay_number is not None else None,
-        arrival_time,
-        start_filling_time,
+        arrival_time, start_filling_time,
         float(target_volume) if target_volume is not None else None,
         float(actual_volume) if actual_volume is not None else None,
         float(final_mass) if final_mass is not None else None,
-        end_filling_time,
-        departure_time,
+        end_filling_time, departure_time,
     ))
 
 
@@ -288,20 +308,18 @@ def _insert_s3b(cursor, tags: dict) -> None:
     cursor.execute(INSERT_S3B, (
         str(order_id),
         int(bay_number) if bay_number is not None else None,
-        arrival_time,
-        start_filling_time,
+        arrival_time, start_filling_time,
         float(target_volume) if target_volume is not None else None,
         float(actual_volume) if actual_volume is not None else None,
         float(final_mass) if final_mass is not None else None,
-        end_filling_time,
-        departure_time,
+        end_filling_time, departure_time,
     ))
 
 
 def _insert_s4(cursor, tags: dict) -> None:
     order_id       = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
     gross_weight   = tags.get(TAG_S4_GROSS)
-    net_weight     = tags.get(TAG_S4_NET)           # PLACEHOLDER
+    net_weight     = tags.get(TAG_S4_NET)
     arrival_time   = _unix_sec_to_dt(tags.get(TAG_S4_ARRIVAL))
     departure_time = _unix_sec_to_dt(tags.get(TAG_S4_DEPARTURE))
 
@@ -317,7 +335,6 @@ def _insert_s4(cursor, tags: dict) -> None:
 def _insert_exit(cursor, tags: dict) -> None:
     order_id       = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
     departure_time = _unix_sec_to_dt(tags.get(TAG_EXIT_DEPARTURE))
-
     cursor.execute(INSERT_EXIT, (str(order_id), departure_time))
 
 
@@ -355,37 +372,39 @@ def iot_hub_to_sql(event: func.EventHubEvent) -> None:
 
     logging.info("Payload type: %s  length: %s", type(payload).__name__, len(payload) if isinstance(payload, list) else "n/a")
 
-    if not _is_plc_payload(payload):
-        logging.warning("Not a PLC payload – skipping. First element keys: %s", list(payload[0].keys()) if isinstance(payload, list) and payload else "n/a")
-        return
-
-    device_id = _get_connection_device_id(payload)
-    logging.info("ConnectionDeviceId: '%s'", device_id)
-
-    station = DEVICE_STATION_MAP.get(device_id)
-    logging.info("Mapped station: '%s'", station)
-
-    if station is None:
-        logging.warning("Unknown device id '%s' – not in DEVICE_STATION_MAP. Known keys: %s", device_id, list(DEVICE_STATION_MAP.keys()))
-        return
-
-    tags = _extract_tags(payload)
-    logging.info("Extracted tags: %s", tags)
-
-    insert_fn = STATION_INSERT_MAP[station]
-
     try:
         logging.info("Connecting to SQL: server=%s database=%s user=%s", SQL_SERVER, SQL_DATABASE, SQL_USER)
         with get_connection() as conn:
             cursor = conn.cursor()
-            logging.info("Connected. Running CREATE_TABLES_SQL...")
             cursor.execute(CREATE_TABLES_SQL)
-            logging.info("Tables ensured. Running insert for station=%s...", station)
-            insert_fn(cursor, tags)
+
+            if _is_plc_payload(payload):
+                device_id = _get_connection_device_id(payload)
+                logging.info("ConnectionDeviceId: '%s'", device_id)
+
+                station = DEVICE_STATION_MAP.get(device_id)
+                logging.info("Mapped station: '%s'", station)
+
+                if station is None:
+                    logging.warning("Unknown device id '%s' – not in DEVICE_STATION_MAP. Known keys: %s",
+                                    device_id, list(DEVICE_STATION_MAP.keys()))
+                    return
+
+                tags = _extract_tags(payload)
+                logging.info("Extracted tags: %s", tags)
+
+                STATION_INSERT_MAP[station](cursor, tags)
+
+            else:
+                logging.info("Not a PLC payload – handling as test_device_telemetry")
+                _handle_test_device(cursor, payload)
+
             conn.commit()
-        logging.info("<<< Done: committed row for station=%s device=%s", station, device_id)
+        logging.info("<<< Done: committed successfully")
     except pymssql.Error as exc:
-        logging.error("SQL error (number=%s severity=%s): %s", exc.args[0] if exc.args else "?", exc.args[1] if len(exc.args) > 1 else "?", exc)
+        logging.error("SQL error (number=%s severity=%s): %s",
+                      exc.args[0] if exc.args else "?",
+                      exc.args[1] if len(exc.args) > 1 else "?", exc)
         raise
     except Exception as exc:
         logging.error("Unexpected error: %s", exc, exc_info=True)
