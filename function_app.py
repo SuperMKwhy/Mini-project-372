@@ -17,70 +17,76 @@ SQL_PASSWORD = os.environ["SqlPassword"]
 # DDL
 # ---------------------------------------------------------------------------
 
-CREATE_TABLES_SQL = """
-IF NOT EXISTS (
-    SELECT * FROM sysobjects WHERE name='test_device_telemetry' AND xtype='U'
-)
-CREATE TABLE test_device_telemetry (
-    id          INT IDENTITY(1,1) PRIMARY KEY,
-    device_id   NVARCHAR(100)   NOT NULL,
-    temperature FLOAT           NOT NULL,
-    humidity    FLOAT           NOT NULL,
-    received_at DATETIME2       NOT NULL
-);
-
-IF NOT EXISTS (SELECT * FROM sys.sequences WHERE name = 'order_seq')
-    EXEC('CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 1');
-
-IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S2_LOGS' AND xtype='U')
-CREATE TABLE S2_LOGS (
-    order_id          NVARCHAR(100)  NOT NULL PRIMARY KEY,
-    arrival_time      DATETIME2      NULL,
-    tare_weight_kg    FLOAT          NULL,
-    departure_time    DATETIME2      NULL
-);
-
-IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S3A_STATIC_LOGS' AND xtype='U')
-CREATE TABLE S3A_STATIC_LOGS (
-    order_id              NVARCHAR(100)  NOT NULL PRIMARY KEY,
-    bay_number            INT            NULL,
-    arrival_time          DATETIME2      NULL,
-    start_filling_time    DATETIME2      NULL,
-    target_volume_liters  FLOAT          NULL,
-    actual_volume_liters  FLOAT          NULL,
-    final_filling_mass_kg FLOAT          NULL,
-    end_filling_time      DATETIME2      NULL,
-    departure_time        DATETIME2      NULL
-);
-
-IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S3B_STATIC_LOGS' AND xtype='U')
-CREATE TABLE S3B_STATIC_LOGS (
-    order_id              NVARCHAR(100)  NOT NULL PRIMARY KEY,
-    bay_number            INT            NULL,
-    arrival_time          DATETIME2      NULL,
-    start_filling_time    DATETIME2      NULL,
-    target_volume_liters  FLOAT          NULL,
-    actual_volume_liters  FLOAT          NULL,
-    final_filling_mass_kg FLOAT          NULL,
-    end_filling_time      DATETIME2      NULL,
-    departure_time        DATETIME2      NULL
-);
-
-IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S4_LOGS' AND xtype='U')
-CREATE TABLE S4_LOGS (
-    order_id          NVARCHAR(100)  NOT NULL PRIMARY KEY,
-    arrival_time      DATETIME2      NULL,
-    gross_weight_kg   FLOAT          NULL,
-    net_weight_kg     FLOAT          NULL,
-    departure_time    DATETIME2      NULL
-);
-
-IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='EXIT_LOGS' AND xtype='U')
-CREATE TABLE EXIT_LOGS (
-    order_id        NVARCHAR(100)  NOT NULL PRIMARY KEY,
-    departure_time  DATETIME2      NULL
-);
-"""
+DDL_STATEMENTS = [
+    """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='test_device_telemetry' AND xtype='U')
+    CREATE TABLE test_device_telemetry (
+        id          INT IDENTITY(1,1) PRIMARY KEY,
+        device_id   NVARCHAR(100)   NOT NULL,
+        temperature FLOAT           NOT NULL,
+        humidity    FLOAT           NOT NULL,
+        received_at DATETIME2       NOT NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sys.sequences WHERE name = 'order_seq')
+        EXEC('CREATE SEQUENCE order_seq START WITH 1 INCREMENT BY 1')
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S2_LOGS' AND xtype='U')
+    CREATE TABLE S2_LOGS (
+        order_id          NVARCHAR(100)  NOT NULL PRIMARY KEY,
+        arrival_time      DATETIME2      NULL,
+        tare_weight_kg    FLOAT          NULL,
+        departure_time    DATETIME2      NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S3A_STATIC_LOGS' AND xtype='U')
+    CREATE TABLE S3A_STATIC_LOGS (
+        order_id              NVARCHAR(100)  NOT NULL PRIMARY KEY,
+        bay_number            INT            NULL,
+        arrival_time          DATETIME2      NULL,
+        start_filling_time    DATETIME2      NULL,
+        target_volume_liters  FLOAT          NULL,
+        actual_volume_liters  FLOAT          NULL,
+        final_filling_mass_kg FLOAT          NULL,
+        end_filling_time      DATETIME2      NULL,
+        departure_time        DATETIME2      NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S3B_STATIC_LOGS' AND xtype='U')
+    CREATE TABLE S3B_STATIC_LOGS (
+        order_id              NVARCHAR(100)  NOT NULL PRIMARY KEY,
+        bay_number            INT            NULL,
+        arrival_time          DATETIME2      NULL,
+        start_filling_time    DATETIME2      NULL,
+        target_volume_liters  FLOAT          NULL,
+        actual_volume_liters  FLOAT          NULL,
+        final_filling_mass_kg FLOAT          NULL,
+        end_filling_time      DATETIME2      NULL,
+        departure_time        DATETIME2      NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='S4_LOGS' AND xtype='U')
+    CREATE TABLE S4_LOGS (
+        order_id          NVARCHAR(100)  NOT NULL PRIMARY KEY,
+        arrival_time      DATETIME2      NULL,
+        gross_weight_kg   FLOAT          NULL,
+        net_weight_kg     FLOAT          NULL,
+        departure_time    DATETIME2      NULL
+    )
+    """,
+    """
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='EXIT_LOGS' AND xtype='U')
+    CREATE TABLE EXIT_LOGS (
+        order_id        NVARCHAR(100)  NOT NULL PRIMARY KEY,
+        departure_time  DATETIME2      NULL
+    )
+    """,
+]
 
 # ---------------------------------------------------------------------------
 # INSERT / UPDATE statements
@@ -376,7 +382,8 @@ def iot_hub_to_sql(event: func.EventHubEvent) -> None:
         logging.info("Connecting to SQL: server=%s database=%s user=%s", SQL_SERVER, SQL_DATABASE, SQL_USER)
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(CREATE_TABLES_SQL)
+            for ddl in DDL_STATEMENTS:
+                cursor.execute(ddl)
 
             if _is_plc_payload(payload):
                 device_id = _get_connection_device_id(payload)
