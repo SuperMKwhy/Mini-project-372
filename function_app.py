@@ -136,6 +136,7 @@ VALUES (%s, %s)
 TAG_ORDER_ID = "OrderId"                    # PLACEHOLDER – PO number string
 
 # S2
+TAG_S2_ORDER_ID  = "S2po"
 TAG_S2_WEIGHT    = "WT_001"
 TAG_S2_ARRIVAL   = "EntryTime_S2"
 TAG_S2_DEPARTURE = "ExitTime_S2"
@@ -260,7 +261,7 @@ def _handle_test_device(cursor, payload: dict) -> None:
 
 
 def _insert_s2(cursor, tags: dict) -> None:
-    order_id       = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
+    order_id       = tags.get(TAG_S2_ORDER_ID) or tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
     arrival_time   = _unix_sec_to_dt(tags.get(TAG_S2_ARRIVAL))
     departure_time = _unix_sec_to_dt(tags.get(TAG_S2_DEPARTURE))
     tare_weight    = tags.get(TAG_S2_WEIGHT)
