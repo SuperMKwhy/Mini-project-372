@@ -212,9 +212,14 @@ def _unix_sec_to_dt(v) -> datetime | None:
     return datetime.fromtimestamp(float(v), tz=timezone.utc)
 
 
-def _extract_tags(payload: list) -> dict:
+def _to_events(payload) -> list:
+    """Normalise payload to a list of event dicts regardless of whether it arrived as a single dict or an array."""
+    return [payload] if isinstance(payload, dict) else payload
+
+
+def _extract_tags(payload) -> dict:
     tags: dict = {}
-    for event in payload:
+    for event in _to_events(payload):
         for item in event.get("values", []):
             suffix = item.get("id", "").split(".")[-1]
             value  = item.get("v")
@@ -223,8 +228,8 @@ def _extract_tags(payload: list) -> dict:
     return tags
 
 
-def _get_connection_device_id(payload: list) -> str:
-    for event in payload:
+def _get_connection_device_id(payload) -> str:
+    for event in _to_events(payload):
         device_id = event.get("IoTHub", {}).get("ConnectionDeviceId")
         if device_id:
             return device_id
@@ -232,7 +237,11 @@ def _get_connection_device_id(payload: list) -> str:
 
 
 def _is_plc_payload(payload) -> bool:
-    return isinstance(payload, list) and len(payload) > 0 and "values" in payload[0]
+    if isinstance(payload, dict):
+        return "values" in payload
+    if isinstance(payload, list) and payload:
+        return "values" in payload[0]
+    return False
 
 
 # ---------------------------------------------------------------------------
