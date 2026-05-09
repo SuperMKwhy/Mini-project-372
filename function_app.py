@@ -106,6 +106,12 @@ INSERT INTO EXIT_LOGS (order_id, departure_time)
 VALUES (%s, %s)
 """
 
+UPDATE_S2_DEPARTURE = """
+UPDATE TOP(1) S2_LOGS
+SET departure_time = %s
+WHERE departure_time IS NULL
+"""
+
 # ---------------------------------------------------------------------------
 # Tag-name suffixes  (last segment of the dot-separated tag id)
 # ---------------------------------------------------------------------------
@@ -114,7 +120,7 @@ VALUES (%s, %s)
 TAG_ORDER_ID = "OrderId"                    # PLACEHOLDER – PO number string; add to every payload
 
 # S2
-TAG_S2_WEIGHT    = "WT-001"                 # kg
+TAG_S2_WEIGHT    = "WT_001"                 # kg
 TAG_S2_ARRIVAL   = "EntryTime_S2"           # Unix seconds
 TAG_S2_DEPARTURE = "ExitTime_S2"            # Unix seconds
 
@@ -220,17 +226,28 @@ def _is_plc_payload(payload) -> bool:
 
 
 def _insert_s2(cursor, tags: dict) -> None:
-    order_id       = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
-    tare_weight    = tags.get(TAG_S2_WEIGHT)
     arrival_time   = _unix_sec_to_dt(tags.get(TAG_S2_ARRIVAL))
     departure_time = _unix_sec_to_dt(tags.get(TAG_S2_DEPARTURE))
+    tare_weight    = tags.get(TAG_S2_WEIGHT)
 
-    cursor.execute(INSERT_S2, (
-        str(order_id),
-        arrival_time,
-        float(tare_weight) if tare_weight is not None else None,
-        departure_time,
-    ))
+    if arrival_time and not departure_time:
+        # Phase 1: truck arrived — INSERT new row, leave departure_time NULL
+        order_id = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
+        cursor.execute(INSERT_S2, (
+            str(order_id),
+            arrival_time,
+            float(tare_weight) if tare_weight is not None else None,
+            None,
+        ))
+        logging.info("S2 entry recorded: order_id=%s arrival=%s weight=%s", order_id, arrival_time, tare_weight)
+
+    elif departure_time and not arrival_time:
+        # Phase 2: truck departed — UPDATE the open row (departure_time IS NULL)
+        cursor.execute(UPDATE_S2_DEPARTURE, (departure_time,))
+        logging.info("S2 departure recorded: departure=%s", departure_time)
+
+    else:
+        logging.warning("S2 payload has unexpected tag combination — entry=%s exit=%s", arrival_time, departure_time)
 
 
 def _insert_s3a(cursor, tags: dict) -> None:
