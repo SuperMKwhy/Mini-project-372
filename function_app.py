@@ -128,11 +128,6 @@ INSERT INTO EXIT_LOGS (order_id, departure_time)
 VALUES (%s, %s)
 """
 
-UPDATE_S2_DEPARTURE = """
-UPDATE TOP(1) S2_LOGS
-SET departure_time = %s
-WHERE departure_time IS NULL
-"""
 
 # ---------------------------------------------------------------------------
 # Tag-name suffixes  (last segment of the dot-separated tag id)
@@ -265,37 +260,18 @@ def _handle_test_device(cursor, payload: dict) -> None:
 
 
 def _insert_s2(cursor, tags: dict) -> None:
+    order_id       = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
     arrival_time   = _unix_sec_to_dt(tags.get(TAG_S2_ARRIVAL))
     departure_time = _unix_sec_to_dt(tags.get(TAG_S2_DEPARTURE))
     tare_weight    = tags.get(TAG_S2_WEIGHT)
 
-    if arrival_time and departure_time:
-        # Full record in one message — INSERT everything at once
-        order_id = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
-        cursor.execute(INSERT_S2, (
-            str(order_id),
-            arrival_time,
-            float(tare_weight) if tare_weight is not None else None,
-            departure_time,
-        ))
-        logging.info("S2 full record: order_id=%s arrival=%s weight=%s departure=%s", order_id, arrival_time, tare_weight, departure_time)
-
-    elif arrival_time:
-        order_id = tags.get(TAG_ORDER_ID) or _next_order_id(cursor)
-        cursor.execute(INSERT_S2, (
-            str(order_id),
-            arrival_time,
-            float(tare_weight) if tare_weight is not None else None,
-            None,
-        ))
-        logging.info("S2 entry only: order_id=%s arrival=%s weight=%s", order_id, arrival_time, tare_weight)
-
-    elif departure_time:
-        cursor.execute(UPDATE_S2_DEPARTURE, (departure_time,))
-        logging.info("S2 departure only: departure=%s", departure_time)
-
-    else:
-        logging.warning("S2 payload has no entry or exit time — tags: %s", tags)
+    cursor.execute(INSERT_S2, (
+        str(order_id),
+        arrival_time,
+        float(tare_weight) if tare_weight is not None else None,
+        departure_time,
+    ))
+    logging.info("S2 inserted: order_id=%s arrival=%s weight=%s departure=%s", order_id, arrival_time, tare_weight, departure_time)
 
 
 def _insert_s3a(cursor, tags: dict) -> None:
