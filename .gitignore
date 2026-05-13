@@ -9,3 +9,7 @@ venv
 sql
 .env.server
 claude.md
+ingestion/
+query.md
+temp.json
+venv2/
