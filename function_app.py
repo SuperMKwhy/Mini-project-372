@@ -3,6 +3,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import List
 
 import azure.functions as func
 import pymssql
@@ -86,7 +87,7 @@ def _sql_conn():
     cardinality="many",
     consumer_group="$Default",
 )
-def iot_hub_processor(events: list[func.EventHubEvent]) -> None:
+def iot_hub_processor(events: List[func.EventHubEvent]) -> None:
     telemetry_rows = []
     sql_inserts = []        # list of (table_name, params_tuple)
     test_device_rows = []   # list of (temperature, humidity, received_at)
