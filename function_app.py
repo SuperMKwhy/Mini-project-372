@@ -61,10 +61,15 @@ def _find(values, pattern):
 
 def _get_device_id(event, body):
     meta = event.metadata or {}
-    return (
+    device_id = (
         meta.get('iothub-connection-device-id')
+        or meta.get('iothub-connection-module-id')
         or body.get('IoTHub', {}).get('ConnectionDeviceId', '')
+        or body.get('device_id', '')
     )
+    if not device_id:
+        logging.warning("device_id not found. metadata keys: %s", list(meta.keys()))
+    return device_id
 
 
 def _sql_conn():
@@ -101,6 +106,7 @@ def iot_hub_processor(events: List[func.EventHubEvent]) -> None:
 
         device_id = _get_device_id(event, body)
         values = body.get('values', [])
+        logging.info("Received event — device_id=%r  values_count=%d", device_id, len(values))
 
         if device_id == 'test-device':
             _extract_test_device(values, test_device_rows)
@@ -170,6 +176,38 @@ def iot_hub_processor(events: List[func.EventHubEvent]) -> None:
 
     if test_device_rows:
         _write_test_device_sql(test_device_rows)
+
+
+# ---------------------------------------------------------------------------
+# HTTP monitoring endpoint  GET /api/telemetry?n=20
+# ---------------------------------------------------------------------------
+
+@app.route(route="telemetry", auth_level=func.AuthLevel.ANONYMOUS)
+def get_telemetry(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        n = min(int(req.params.get('n', 20)), 200)
+    except ValueError:
+        n = 20
+    table = os.environ.get('SqlTableTestDevice', 'test_device_telemetry')
+    try:
+        conn = _sql_conn()
+        cursor = conn.cursor(as_dict=True)
+        cursor.execute(
+            f"SELECT TOP {n} id, device_id, temperature, humidity, received_at "
+            f"FROM {table} ORDER BY received_at DESC"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        for row in rows:
+            row['received_at'] = str(row['received_at'])
+        return func.HttpResponse(
+            json.dumps({"count": len(rows), "rows": rows}, indent=2),
+            mimetype="application/json",
+            status_code=200,
+        )
+    except Exception as exc:
+        logging.error("get_telemetry error: %s", exc)
+        return func.HttpResponse(str(exc), status_code=500)
 
 
 # ---------------------------------------------------------------------------
