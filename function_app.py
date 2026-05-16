@@ -88,7 +88,8 @@ def _sql_conn():
 )
 def iot_hub_processor(events: list[func.EventHubEvent]) -> None:
     telemetry_rows = []
-    sql_inserts = []   # list of (table_name, params_tuple)
+    sql_inserts = []        # list of (table_name, params_tuple)
+    test_device_rows = []   # list of (temperature, humidity, received_at)
 
     for event in events:
         try:
@@ -97,10 +98,15 @@ def iot_hub_processor(events: list[func.EventHubEvent]) -> None:
             logging.warning("Skipping unparseable event: %s", exc)
             continue
 
-        if _get_device_id(event, body) != 'S2_plc':
+        device_id = _get_device_id(event, body)
+        values = body.get('values', [])
+
+        if device_id == 'test-device':
+            _extract_test_device(values, test_device_rows)
             continue
 
-        values = body.get('values', [])
+        if device_id != 'S2_plc':
+            continue
 
         # --- Telemetry → Blob ---
         for item in values:
@@ -161,6 +167,9 @@ def iot_hub_processor(events: list[func.EventHubEvent]) -> None:
     if sql_inserts:
         _write_sql(sql_inserts)
 
+    if test_device_rows:
+        _write_test_device_sql(test_device_rows)
+
 
 # ---------------------------------------------------------------------------
 # Extractors
@@ -211,6 +220,49 @@ def _extract_bay(values, out, table, bay_number,
         logging.info("Bay %d row queued: order_id=%s", bay_number, po['v'])
     except (KeyError, TypeError, ValueError) as exc:
         logging.warning("Bay %d extract error: %s", bay_number, exc)
+
+
+# ---------------------------------------------------------------------------
+# Test-device extractor & writer
+# ---------------------------------------------------------------------------
+
+def _extract_test_device(values, out):
+    tt100 = _find(values, 'TT_100')
+    tt200 = _find(values, 'TT_200')
+    if not (tt100 and tt200):
+        logging.warning("test-device: missing TT_100 or TT_200 — skipping")
+        return
+    try:
+        out.append((
+            float(tt100['v']),
+            float(tt200['v']),
+            _fmt(_epoch_ms(int(tt100['t']))),
+        ))
+    except (KeyError, TypeError, ValueError) as exc:
+        logging.warning("test-device extract error: %s", exc)
+
+
+def _write_test_device_sql(rows):
+    table = os.environ.get('SqlTableTestDevice', 'test_device_telemetry')
+    sql = (
+        f"INSERT INTO {table} (device_id, temperature, humidity, received_at) "
+        "VALUES (%s, %s, %s, %s)"
+    )
+    try:
+        conn = _sql_conn()
+        cursor = conn.cursor()
+        for temp, humid, received_at in rows:
+            cursor.execute(sql, ('test-device', temp, humid, received_at))
+        conn.commit()
+        logging.info("test-device SQL committed: %d rows", len(rows))
+    except Exception as exc:
+        logging.error("test-device SQL write failed: %s", exc)
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
